@@ -151,21 +151,32 @@ class DavCollectionRepository @Inject constructor(
             .withTrailingSlash()
 
         // create collection on server
-        createOnServer(
-            accountId = accountId,
-            url = url,
-            method = "MKCALENDAR",
-            xmlBody = generateMkColXml(
-                addressBook = false,
-                displayName = displayName,
-                description = description,
-                color = color,
-                timezoneId = timeZoneId,
-                supportsVEVENT = supportVEVENT,
-                supportsVTODO = supportVTODO,
-                supportsVJOURNAL = supportVJOURNAL
-            )
+        fun calendarXml(extendedMkCol: Boolean) = generateMkColXml(
+            addressBook = false,
+            extendedMkCol = extendedMkCol,
+            displayName = displayName,
+            description = description,
+            color = color,
+            timezoneId = timeZoneId,
+            supportsVEVENT = supportVEVENT,
+            supportsVTODO = supportVTODO,
+            supportsVJOURNAL = supportVJOURNAL
         )
+        try {
+            createOnServer(accountId, url, "MKCALENDAR", calendarXml(extendedMkCol = false))
+        } catch (e: HttpException) {
+            // Some servers (e.g. Migadu) don't implement MKCALENDAR, but support extended MKCOL (RFC 5689).
+            if (e.statusCode == 501) {
+                logger.info("MKCALENDAR not implemented by server, retrying with extended MKCOL")
+                try {
+                    createOnServer(accountId, url, "MKCOL", calendarXml(extendedMkCol = true))
+                } catch (mkColException: Exception) {
+                    mkColException.addSuppressed(e)
+                    throw mkColException
+                }
+            } else
+                throw e
+        }
 
         // no HTTP error -> create collection locally
         val collection = Collection(
@@ -351,8 +362,13 @@ class DavCollectionRepository @Inject constructor(
             }
     }
 
+    /**
+     * @param extendedMkCol whether to generate an extended MKCOL body (RFC 5689) instead of a MKCALENDAR body
+     *   (RFC 4791); address books can only be created with extended MKCOL
+     */
     private fun generateMkColXml(
         addressBook: Boolean,
+        extendedMkCol: Boolean = addressBook,
         displayName: String?,
         description: String?,
         color: Int? = null,
@@ -371,7 +387,7 @@ class DavCollectionRepository @Inject constructor(
             setPrefix("CAL", CalDAV.NS_CALDAV)
             setPrefix("CARD", CardDAV.NS_CARDDAV)
 
-            if (addressBook)
+            if (extendedMkCol)
                 startTag(WebDAV.NS_WEBDAV, "mkcol")
             else
                 startTag(CalDAV.NS_CALDAV, "mkcalendar")
@@ -453,7 +469,7 @@ class DavCollectionRepository @Inject constructor(
                     }
                 }
             }
-            if (addressBook)
+            if (extendedMkCol)
                 endTag(WebDAV.NS_WEBDAV, "mkcol")
             else
                 endTag(CalDAV.NS_CALDAV, "mkcalendar")
